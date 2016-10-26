@@ -597,12 +597,46 @@ static void print_event_device_prop_changed(PTPParams* params, uint16_t property
 //	getset_property_internal(&params, property, NULL, force);
 }
 
+static int wait_capture_complete(PTP_USB* ptp_usb, PTPParams* params, short force)
+{
+	PTPContainer event;
+	uint32_t handle=0;
+	int BurstNumber=0;
+
+	for (;;) {
+		short ret=ptp_usb_event_wait(params,&event);
+		if (ret!=PTP_RC_OK) {
+			printf ("Error waiting for event. Capture status unknown.\n");
+			return -1; /* error */
+		}
+		if (verbose) printf ("Event received %08x, ret=%x\n", event.Code, ret);
+		switch (event.Code) {
+		case PTP_EC_DevicePropChanged:
+			if (verbose) print_event_device_prop_changed(params, event.Param1, force);
+			break;
+		case PTP_EC_ObjectAdded:
+			handle = event.Param1;
+			BurstNumber++;
+			printf ("Object added 0x%08lx\n", (long unsigned) handle);
+			break;
+		case PTP_EC_CaptureComplete:
+			if (BurstNumber==0) {
+				printf ("Camera reported 'capture completed' but the object information is missing.\n");
+				return -1; /* error */
+			}
+			else {
+				printf ("Capture completed successfully!\n");
+				return 0; /* success */
+			}
+		} /* end switch event.Code */
+	} /* end forever */
+}
+
 void
 capture_image (int busn, int devn, short force, long property, const char* value)
 {
 	PTPParams params;
 	PTP_USB ptp_usb;
-	PTPContainer event;
 	int ExposureTime=0;
 	struct usb_device *dev;
 	short ret;
@@ -631,27 +665,7 @@ capture_image (int busn, int devn, short force, long property, const char* value
 
 	CR(ptp_initiatecapture (&params, 0x0, 0), "Could not capture.\n");
 
-	ret=ptp_usb_event_wait(&params,&event);
-	if (ret!=PTP_RC_OK) goto err;
-	if (verbose) printf ("Event received %08x, ret=%x\n", event.Code, ret);
-	if (event.Code==PTP_EC_CaptureComplete) {
-		printf ("Camera reported 'capture completed' but the object information is missing.\n");
-		goto out;
-	}
-	
-	while (event.Code==PTP_EC_ObjectAdded) {
-		printf ("Object added 0x%08lx\n", (long unsigned) event.Param1);
-		if (ptp_usb_event_wait(&params, &event)!=PTP_RC_OK)
-			goto err;
-		if (verbose) printf ("Event received %08x, ret=%x\n", event.Code, ret);
-		if (event.Code==PTP_EC_CaptureComplete) {
-			printf ("Capture completed successfully!\n");
-			goto out;
-		}
-	}
-
-err:
-	printf("Events receiving error. Capture status unknown.\n");
+	wait_capture_complete(&ptp_usb, &params, force);
 out:
 
 	ptpcam_usb_timeout=USB_TIMEOUT;
@@ -663,7 +677,6 @@ capture_hdr_image (int busn, int devn, short force, long property, const char* v
 {
 	PTPParams params;
 	PTP_USB ptp_usb;
-	PTPContainer event;
 	PTPDevicePropDesc dpdExposureComp;
 	int ExposureTime=0;
 	int16_t ExposureBiasCompensation;
@@ -672,7 +685,7 @@ capture_hdr_image (int busn, int devn, short force, long property, const char* v
 	int i;
 	short ret;
 
-	printf("\nInitiating capture...\n");
+	printf("\nInitiating captue...\n");
 	if (open_camera(busn, devn, force, &ptp_usb, &params, &dev)<0)
 		return;
 	set_prop_array_in_capture(&params, property, value, force);
@@ -733,33 +746,10 @@ capture_hdr_image (int busn, int devn, short force, long property, const char* v
 
 		CR(ptp_initiatecapture (&params, 0x0, 0), "Could not capture.\n");
 
-		ret=ptp_usb_event_wait(&params,&event);
-		if (ret!=PTP_RC_OK) goto err;
-		if (verbose) printf ("Event received %08x, ret=%x\n", event.Code, ret);
-		if (event.Code==PTP_EC_CaptureComplete) {
-			printf ("Camera reported 'capture completed' but the object information is missing.\n");
-			goto out;
-		}
-
-		while (event.Code==PTP_EC_ObjectAdded) {
-			printf ("Object added 0x%08lx\n", (long unsigned) event.Param1);
-			if (ptp_usb_event_wait(&params, &event)!=PTP_RC_OK)
-			{
-				printf ("Error waiting for event. Capture status unknown.\n");
-				break;
-			}
-			if (verbose) printf ("Event received %08x, ret=%x\n", event.Code, ret);
-			if (event.Code==PTP_EC_CaptureComplete) {
-				printf ("Capture completed successfully!\n");
-				break;
-			}
-		}
+		int error = wait_capture_complete(&ptp_usb, &params, force);
+		if (error) goto out;
 	}
 
-	goto out;
-
-err:
-	printf ("Error waiting for event. Capture status unknown.\n");
 out:
 
 	/* Attempt to reset the exposure comp to the initial value */
@@ -985,7 +975,7 @@ nikon_direct_capture (int busn, int devn, short force, char* filename,int overwr
 		}
 	}
 
-	printf("\nInitiating direct capture...\n");
+	printf("\nInitiating direct captue...\n");
 
 	if (params.deviceinfo.VendorExtensionID!=PTP_VENDOR_NIKON)
 	{
